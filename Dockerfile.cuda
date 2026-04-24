@@ -1,0 +1,56 @@
+# GPU image — CUDA 12.8 devel + cuDNN, Python 3.12, GPU-enabled torch.
+# CUDA 12.8 covers Blackwell (sm_120, RTX 50xx) and older archs back to sm_70
+# (Volta). Uses the devel base because transformers/accelerate JIT-compile
+# some CUDA kernels on first forward pass and need gcc + cuda.h present.
+FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04 AS base
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    DEBIAN_FRONTEND=noninteractive \
+    OCR_API_HOST=0.0.0.0 \
+    OCR_API_PORT=11436 \
+    OCR_API_DEVICE=cuda \
+    HF_HOME=/home/app/.cache/huggingface \
+    CC=gcc \
+    CXX=g++
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        software-properties-common curl git ca-certificates gosu \
+        gcc g++ \
+    && add-apt-repository -y ppa:deadsnakes/ppa \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        python3.12 python3.12-venv python3.12-dev \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -sf /usr/bin/python3.12 /usr/local/bin/python \
+    && ln -sf /usr/bin/python3.12 /usr/local/bin/python3 \
+    && python -m ensurepip --upgrade \
+    && python -m pip install --upgrade pip
+
+WORKDIR /app
+
+COPY pyproject.toml README.md LICENSE ./
+COPY src ./src
+
+RUN python -m pip install --index-url https://download.pytorch.org/whl/cu128 \
+        "torch>=2.7" "torchvision" \
+    && python -m pip install .
+
+RUN useradd --create-home --uid 1000 app \
+    && mkdir -p /home/app/.cache/huggingface \
+    && chown -R app:app /home/app
+
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
+WORKDIR /home/app
+
+EXPOSE 11436
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=600s --retries=3 \
+    CMD curl -fsS http://127.0.0.1:${OCR_API_PORT}/health || exit 1
+
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
