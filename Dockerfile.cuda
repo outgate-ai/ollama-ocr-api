@@ -2,6 +2,11 @@
 # CUDA 12.8 covers Blackwell (sm_120, RTX 50xx) and older archs back to sm_70
 # (Volta). Uses the devel base because transformers/accelerate JIT-compile
 # some CUDA kernels on first forward pass and need gcc + cuda.h present.
+#
+# Layer ordering is deliberate: heavy, rarely-changing layers (torch +
+# transformers stack, OS packages, user setup) come first; the application
+# code is the very last layer. A typical code-change release re-pushes
+# only the small app layer instead of the multi-GB torch layer.
 FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04 AS base
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -16,6 +21,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     CC=gcc \
     CXX=g++
 
+# --- Layer 1: OS packages + Python 3.12 + pip.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         software-properties-common curl git ca-certificates gosu \
@@ -30,21 +36,26 @@ RUN apt-get update \
     && python -m ensurepip --upgrade \
     && python -m pip install --upgrade pip
 
-WORKDIR /app
-
-COPY pyproject.toml README.md LICENSE ./
-COPY src ./src
-
+# --- Layer 2: torch + cu128 wheels (multi-GB). Invalidated only on torch
+# version bump or CUDA base bump.
 RUN python -m pip install --index-url https://download.pytorch.org/whl/cu128 \
-        "torch>=2.7" "torchvision" \
-    && python -m pip install .
+        "torch>=2.7" "torchvision"
 
+# --- Layer 3: unprivileged user + cache dir + entrypoint script.
 RUN useradd --create-home --uid 1000 app \
     && mkdir -p /home/app/.cache/huggingface \
     && chown -R app:app /home/app
-
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
+# --- Layer 4: project metadata. Small.
+WORKDIR /app
+COPY pyproject.toml README.md LICENSE ./
+
+# --- Layer 5: application source + project pip install. Only this
+# layer re-pushes on a typical code-change release.
+COPY src ./src
+RUN python -m pip install .
 
 WORKDIR /home/app
 
