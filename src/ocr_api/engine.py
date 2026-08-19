@@ -158,11 +158,9 @@ class VisionEngine:
         import torch
         from PIL import Image
 
-        decoded_images = []
         pil_images = []
         for b64 in images_b64:
             decoded = decode_base64_image(b64, self._max_image_bytes)
-            decoded_images.append(decoded)
             try:
                 img = Image.open(io.BytesIO(decoded.data))
                 img.load()
